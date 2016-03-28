@@ -362,7 +362,12 @@ fileredirect:{[logdir;filename;alias;handle]
 
 createalias:{[logdir;filename;alias] 
 	$[.z.o like "w*"; 
-  		.lg.o[`logging;"cannot create alias on windows OS"];
+ 		[a:(d:ssr[logdir;"/";"\\"]),"\\",alias;
+		 if[not()~key .Q.dd[hsym`$logdir;`$alias];
+			.lg.o[`logging;"removing alias using command ",s:"del /F ",a];
+			@[system;s;{.lg.w[`init;"failed to remove alias ",x," on windows OS: ",y]}[s]]];
+		 .lg.o[`logging;"creating alias using command ",s:"mklink /H ",a," ",d,"\\",filename];
+		 @[system;s;{.lg.w[`init;"failed to create alias ",x," on windows OS: ",y]}[s]]];
  		[.lg.o[`logging;"creating alias using command ",s:"ln -sf ",filename," ",logdir,"/",alias];
 		 @[system;s;{.lg.e[`init;"failed to create alias ",x," : ",y]}[s]]]]}
 
