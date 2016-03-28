@@ -1,2 +1,2 @@
-k4unit.q
-runtests.q
+qunit.q
+unit_tests.q
