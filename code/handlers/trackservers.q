@@ -15,17 +15,20 @@ DISCOVERYREGISTER:@[value;`DISCOVERYREGISTER;1b]						// whether to register wit
 CONNECTIONSFROMDISCOVERY:@[value;`CONNECTIONSFROMDISCOVERY;1b]     				// whether to get connection details from the discovery service (as opposed to the static file)
 SUBSCRIBETODISCOVERY:@[value;`SUBSCRIBETODISCOVERY;1b]						// whether to subscribe to the discovery service for new processes becoming available
 DISCOVERYRETRY:@[value;`DISCOVERYRETRY;0D00:05]         					// how often to retry the connection to the discovery service.  If 0, no connection is made
-TRACKNONTORQPROCESS:@[value;`TRACKNONTORQPROCESS;0b]						// whether to track and register non torQ processes 
+TRACKNONTORQPROCESS:@[value;`TRACKNONTORQPROCESS;0b]						// whether to track and register non torQ processes
 NONTORQPROCESSFILE:@[value;`NONTORQPROCESSFILE;hsym .proc.getconfigfile["nontorqprocess.csv"]]	// non torQ processes file
 HOPENTIMEOUT:@[value;`HOPENTIMEOUT;2000]							// new connection time out value in milliseconds
 RETRY:@[value;`RETRY;0D00:05]									// period on which to retry dead connections. If 0 no connection is made
 RETAIN:@[value;`RETAIN;`long$0D00:30]								// length of time to retain server records
-AUTOCLEAN:@[value;`AUTOCLEAN;1b]								// clean out old records when handling a close
+AUTOCLEAN:@[value;`AUTOCLEAN;0b]								// clean out old records when handling a close
 DEBUG:@[value;`DEBUG;1b]									// whether to print debug output
 LOADPASSWORD:@[value;`LOADPASSWORD;1b]                 						// load the external username:password from ${KDBCONFIG}/passwords
 USERPASS:`											// the username and password used to make connections
 STARTUP:@[value;`STARTUP;0b]									// whether to automatically make connections on startup
 DISCOVERY:@[value;`DISCOVERY;enlist`]								// list of discovery services to connect to (if not using process.csv)
+SOCKETTYPE:@[value;`SOCKETTYPE;enlist[`]!enlist `]                                              // dict of proctype!sockettype. sockettype options : `tcp`tcps`unix. e.g. `rdb`tickerplant!`tcp`unix
+PASSWORDS:@[value;`PASSWORDS;enlist[`]!enlist `]						// dict of host:port!user:pass e.g. `:host:1234!`user:pass
+
 
 // If required, change this method to something more secure!
 // Otherwise just load the usernames and passwords from the passwords directory
@@ -46,18 +49,22 @@ loadpassword[]
 // open a connection
 opencon:{
 	if[DEBUG;.lg.o[`conn;"attempting to open handle to ",string x]];
-	// If the supplied connection string doesn't contain a user:password,
-	// and USERPASS is not null, append it
-   	connection:hsym $[(2 >= sum ":"=string x) and not null USERPASS; `$(string x),":",string USERPASS;x];
+
+	// If the supplied connection string has 2 or more colons append on user:pass from passwords dictionary
+        // else return connection string passed in
+        connection:hsym $[2 >= sum ":"=string x; `$(string x),":",string USERPASS^PASSWORDS[x];x];
+
 	h:@[{(hopen x;"")};(connection;.servers.HOPENTIMEOUT);{(0Ni;x)}];
+
 	// just log this as standard out.  Depending on the scenario, failing to open a connection isn't necessarily an error
 	if[DEBUG;.lg.o[`conn;"connection to ",(string x),$[null first h;" failed: ",last h;" successful"]]];
+
 	first h}
 
 // req = required set of attribute
 // avail = the attributes which the server process is advertising
 // return a dict of (complete match boolean; partial match values)
-attributematch:{[req;avail] 
+attributematch:{[req;avail]
 	// the dictionary is mixed type - so have to handle non values in the avialable dictionary separately
 	vals:key[req] inter key avail;
 	notpresent:noval!(count noval:key[req] except key avail)#enlist(0b;());
@@ -100,7 +107,7 @@ getserverbytype:{[ptype;serverval;selection]
 	r[serverval]}
 
 gethandlebytype:getserverbytype[;`w;]
-gethpbytype:getserverbytype[;`hpup;] 
+gethpbytype:getserverbytype[;`hpup;]
 
 // Update the server stats
 updatestats:{[W] update lastp:.proc.cp[],hits:1+hits from`.servers.SERVERS where w=W}
@@ -110,8 +117,8 @@ types:{asc distinct exec proctypes from`.servers.SERVERS where .dotz.liveh w}
 unregistered:{except[key .z.W;exec w from`.servers.SERVERS]}
 
 cleanup:{if[count w0:exec w from`.servers.SERVERS where not .dotz.livehn w;
-        update lastp:.proc.cp[],w:0Ni from`.servers.SERVERS where w in w0];
-    if[AUTOCLEAN;delete from`.servers.SERVERS where not .dotz.liveh w,lastp<.proc.cp[]-.servers.RETAIN];}
+        update endp:.proc.cp[],lastp:.proc.cp[],w:0Ni from`.servers.SERVERS where w in w0];
+    if[AUTOCLEAN;delete from`.servers.SERVERS where not .dotz.liveh w,(.proc.cp[]^endp)<.proc.cp[]-.servers.RETAIN];}
 
 / add a new server for current session
 addnthawc:{[name;proctype;hpup;attributes;W;checkhandle]
@@ -125,7 +132,7 @@ addnthawc:{[name;proctype;hpup;attributes;W;checkhandle]
 
 addh:{[hpuP]
     W:opencon hpuP;
-    $[null W; 
+    $[null W;
 	'"failed to open handle to ",string hpuP;
 	addhw[hpuP;W]]}
 
@@ -140,7 +147,7 @@ addhw:{[hpuP;W]
 	if[0Ni~info`port;'"remote call failed on handle ",string W];
 	if[null name:info`procname;name:`$last("/"vs string info`f)except enlist""];
 	if[0=count name;name:`default];
-	if[null hpuP;hpuP:hsym`$(string info`h),":",string info`port];
+	if[null hpuP;hpuP:.servers.formathp[info`h;info`port;`tcp^.servers.SOCKETTYPE info`proctype]];
 	// If this handle already has an entry, delete the old entry
 	delete from `.servers.SERVERS where w=W;
 	addnthawc[name;info`proctype;hpuP;info`attributes;W;0b]}
@@ -170,20 +177,22 @@ autodiscovery:{if[DISCOVERYRETRY>0; .servers.retrydiscovery[]]}
 
 // Attempt to make a connection for specified row ids
 retryrows:{[rows]
-	update lastp:.proc.cp[],w:.servers.opencon each hpup from`.servers.SERVERS where i in rows;
+	// opencon, amends global tables, cannot be used inside of a select statement
+	handles:.servers.opencon each exec hpup from`.servers.SERVERS where i in rows;
+	update lastp:.proc.cp[],w:handles from`.servers.SERVERS where i in rows;
         update attributes:{$[null x;()!();@[x;(`.proc.getattributes;`);()!()]]} each w,startp:?[null w;0Np;.proc.cp[]] from `.servers.SERVERS where i in rows;
-        if[ count connectedrows:select from `.servers.SERVERS where i in rows, .dotz.liveh0 w; 
+        if[ count connectedrows:select from `.servers.SERVERS where i in rows, .dotz.liveh0 w;
 	connectcustom[connectedrows]]}
 
 // user definable function to be executed when a service is reconnected. Also performed on first connection of that service.
 // Input is the line(s) from .servers.SERVERS corresponding to the newly (re)connected service
-connectcustom:@[value;`.servers.connectcustom;{[connectedrows]}]  
+connectcustom:@[value;`.servers.connectcustom;{[connectedrows]}]
 
 // close handles and remove rows from the table
 removerows:{[rows]
 	@[hclose;;()] each .servers.SERVERS[rows][`w] except 0 0Ni;
 	delete from `.servers.SERVERS where i in rows}
-	
+
 // Create some connections and optionally connect to them
 register:{[connectiontab;proc;connect]
 	{addnthawc[x`procname;x`proctype;x`hpup;()!();0Ni;0b]}each distinct select from connectiontab where proctype=proc;
@@ -202,7 +211,7 @@ querydiscovery:{[procs]
 		 raze @[;(`getservices;procs;SUBSCRIBETODISCOVERY);()] each h]}
 
 // register processes from the discovery service
-// if connect is true, will try to 
+// if connect is true, will try to
 registerfromdiscovery:{[procs;connect]
 	if[`discovery in procs; '"cannot use registerfromdiscovery to locate discovery services"];
 	.lg.o[`conn;"requesting processes from discovery service"];
@@ -212,7 +221,8 @@ registerfromdiscovery:{[procs;connect]
 	addprocs[res;procs;connect];}
 
 addprocs:{[connectiontab;procs;connect]
-	// filter out any we already have - same name,type and hpup
+	connectiontab:formatprocs[delete split from update host:`$last each -1 _' split, port:"I"$last each split from update split:{":" vs string x}each hpup from connectiontab];
+ 	// filter out any we already have - same name,type and hpup
 	res:select from connectiontab where not ([]procname;proctype;hpup) in select procname,proctype,hpup from .servers.SERVERS;
 	// we've dropped some items - maybe there are updated attributes
 	if[not count[res]=count connectiontab;
@@ -226,10 +236,10 @@ addprocs:{[connectiontab;procs;connect]
 // addprocscustom is to allow bespoke extensions when adding processes
 addprocscustom:{[connectiontab;procs]}
 
-// used to handle updates from the discovery service 
+// used to handle updates from the discovery service
 // procupdatecustom is used to extend the functionality - do something when the service has been updated
 procupdate:{[procs] addprocs[procs;exec distinct proctype from procs;0b];}
-	
+
 // refresh the attribute registration with each of the discovery servers
 // useful for things like HDBs where the attributes may periodically change
 refreshattributes:{
@@ -237,16 +247,71 @@ refreshattributes:{
 	(neg exec w from .servers.getservers[`proctype;`discovery;()!();0b;0b])@\:(`..register;`);
 	}
 
+// return true if unix domain sockets can be used
+domainsocketsenabled:{[]
+        // unix domain sockets only works on unix and not windows
+        notwin:not .z.o like "w*";
+	// v3.4 brought in the first version of unix domain sockets ipc
+        iskdbv:3.4>=.z.K;
+        :notwin and iskdbv;
+	}
+
+// format hpup from procs table, take into account ipc type
+// IPCTYPE [-11h] (`tcp;`tcps;`unix);
+formathp:{[HOST;PORT;IPCTYPE]
+	ipctype:IPCTYPE;
+	isunixsocket:ipctype = `unix;
+	notsamebox:not any HOST in `localhost,.z.h;
+
+	host:string $[HOST=`localhost;.z.h;HOST];
+	port:string PORT;
+
+	/// Determine whether socket connection is valid
+	// revert socket to tcp;
+	if[isunixsocket and notsamebox;
+		.lg.w[`formathp;"Expects to connect via domain sockets, but host is not on the same machine. Reverting IPC mechanism to TCP"];
+		ipctype:`tcp;
+	];
+	if[isunixsocket and not domainsocketsenabled[];
+		.lg.w[`formathp;"Domain sockets are not enabled for this system. Reverting IPC mechanism from to TCP"];
+		ipctype:`tcp;
+	];
+
+	/// Format hpup file handle
+	if[ipctype = `tcp;
+		hpup:lower `$":",host,":",port;
+ 	];
+	if[ipctype = `tcps;
+		hpup:lower `$":tcps://",host,":",port;
+ 	];
+	if[ipctype = `unix;
+		hpup:lower `$":unix://",port;
+	];
+
+	:hpup;
+	}
+
+// do full formatting of proc table
+formatprocs:{[PROCS]
+	procs:update ipctype:`tcp^.servers.SOCKETTYPE[proctype] from PROCS;
+	procs:update hpup:.servers.formathp'[host;port;ipctype] from procs;
+	:procs;
+	}
+
+// given a hpup, return its ipc type (`tcp;`tcps;`unix)
+getipctype:{[HPUP]
+        tokens:`unix`tcps!(":unix://*";":tcps://*");
+        :`tcp^first where string[HPUP] like/: tokens;
+	}
+
 // called at start up
-// either load in 	
 startup:{
-	// read in the table of processes, both TorQ processes and external processes
-  	procs:update hpup:lower `$(((":",'string ?[host=`localhost;.z.h;host]),'":"),'string port) from .proc.readprocs .proc.file;
-  	nontorqprocesstab::$[count key NONTORQPROCESSFILE;
-				update hpup:lower `$(((":",'string ?[host=`localhost;.z.h;host]),'":"),'string port) from .proc.readprocs NONTORQPROCESSFILE;
-				0#procs];
+	// correctly format procs and hpup
+	procstab::procs:formatprocs .proc.readprocs .proc.file;
+  	nontorqprocesstab::formatprocs $[count key NONTORQPROCESSFILE;.proc.readprocs NONTORQPROCESSFILE;0#procs];
+
 	// If DISCOVERY servers have been explicity defined
-       if[count .servers.DISCOVERY;
+	if[count .servers.DISCOVERY;
                 if[not null first .servers.DISCOVERY;
                         if[count select from procs where hpup in .servers.DISCOVERY; .lg.e[`startup; "host:port in .servers.DISCOVERY list is already present in data read from ",string .proc.file]];
                         procs,:([]host:`;port:0Ni;proctype:`discovery;procname:`;hpup:.servers.DISCOVERY)]];
@@ -255,8 +320,8 @@ startup:{
 	procs: delete from procs where ([] procname; proctype; hpup) in connectedprocs;
 	nontorqprocs: delete from nontorqprocesstab where ([] procname; proctype; hpup) in connectedprocs;
 	// if there aren't any processes left to connect to, then escape
-	if[ not any count each (procs;nontorqprocs); .lg.o[`conn;"No new processes to connect to.  Escaping..."];:()];
-	if[CONNECTIONSFROMDISCOVERY or DISCOVERYREGISTER; 
+	if[not any count each (procs;nontorqprocs); .lg.o[`conn;"No new processes to connect to.  Escaping..."];:()];
+	if[CONNECTIONSFROMDISCOVERY or DISCOVERYREGISTER;
 		register[procs;`discovery;0b];
 		retrydiscovery[]];
 	if[not CONNECTIONSFROMDISCOVERY; register[procs;;0b] each $[CONNECTIONS~`ALL;exec distinct proctype from procs;CONNECTIONS]];
@@ -264,7 +329,7 @@ startup:{
 	// try and open dead connections
 	retry[]}
 
-			
+
 pc:{[result;W] update w:0Ni,endp:.proc.cp[] from`.servers.SERVERS where w=W;cleanup[];result}
 
 if[enabled;

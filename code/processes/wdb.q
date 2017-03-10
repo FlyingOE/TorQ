@@ -5,6 +5,7 @@
 /-at eod the on-disk data may be sorted and attributes applied as specified in the sort.csv file
 
 \d .wdb
+
 /- define default parameters
 mode:@[value;`mode;`saveandsort];	/- the wdb process can operate in three modes
 									/- 1. saveandsort 	- 	the process will subscribe for data,
@@ -33,7 +34,9 @@ hdbtypes:@[value;`hdbtypes;`hdb];                               /-list of hdb ty
 rdbtypes:@[value;`rdbtypes;`rdb];                               /-list of rdb types to look for and call in rdb reload
 gatewaytypes:@[value;`gatewaytypes;`gateway]					/-list of gateway types to inform at reload
 tickerplanttypes:@[value;`tickerplanttypes;`tickerplant];      	/-list of tickerplant types to try and make a connection to
-tpconnsleepintv:@[value;`tpconnsleepintv;10];                   /-number of seconds between attempts to connect to the tp											
+tpconnsleepintv:@[value;`tpconnsleepintv;10];                   /-number of seconds between attempts to connect to the tp								
+sorttypes:@[value;`sorttypes;`sort];                   		/-list of sort types to look for upon a sort		
+sortslavetypes:@[value;`sortslavetypes;`sortslave];             /-list of sort types to look for upon a sort being called with slave process		
 										
 subtabs:@[value;`subtabs;`]                                     /-list of tables to subscribe for
 subsyms:@[value;`subsyms;`]                                     /-list of syms to subscription to
@@ -69,6 +72,12 @@ eodwaittime:@[value;`eodwaittime;0D00:00:10.000]		/- length of time to wait for 
 
 / - end of default parameters
 
+/ - define .z.pd in order to connect to any slave processes
+.z.pd:{$[.z.K<3.3;
+        `u#`int$();
+	`u#exec w from .servers.getservers[`proctype;sortslavetypes;()!();1b;0b]]
+        }
+
 /- fix any backslashes on windows
 savedir:.os.pthq savedir;
 hdbdir:.os.pthq hdbdir;
@@ -85,14 +94,18 @@ switch: string `off`on;
 / - check to ensure that the process can do one of save or sort
 if[not any saveenabled,sortenabled; .lg.e[`init;"process mode not configured correctly.  Mode should be one of the following: save, sort or saveandsort"]];
 
-/- function to return a list of tables that the wdb process has been configured to deal within
-tablelist:{[] tables[`.] except ignorelist};
-
 /- extract user defined row counts	
 maxrows:{[tabname] numrows^numtab[tabname]}
 
 /- extract user defined row counts for merge process
 mergemaxrows:{[tabname] mergenumrows^mergenumtab[tabname]}
+
+/- keyed table to track the size of tables on disk
+tabsizes:([tablename:`symbol$()] rowcount:`long$(); bytes:`long$())
+
+/- function to return a list of tables that the wdb process has been configured to deal within
+tablelist:{[] sortedlist:exec tablename from `bytes xdesc .wdb.tabsizes;
+	(sortedlist union tables[`.]) except ignorelist}
 
 /- if row count satisfied, save data to disk, then delete from memory
 savetables:{[dir;pt;forcesave;tabname]
@@ -104,9 +117,12 @@ savetables:{[dir;pt;forcesave;tabname]
 	.lg.o[`save;"saving ",(string tabname)," data to partition ", string pt];
 	.[
 		upsert;
-		(` sv .Q.par[dir;pt;tabname],`;.Q.en[hdbdir;0!.save.manipulate[tabname;`. tabname]]);
+		(` sv .Q.par[dir;pt;tabname],`;.Q.en[hdbdir;r:0!.save.manipulate[tabname;`. tabname]]);
 		{[e] .lg.e[`savetables;"Failed to save table to disk : ",e];'e}
 	];
+	/- make addition to tabsizes
+	.lg.o[`track;"appending table details to tabsizes"];
+	.wdb.tabsizes+:([tablename:enlist tabname]rowcount:enlist arows;bytes:enlist -22!r);
 	/- empty the table
 	.lg.o[`delete;"deleting ",(string tabname)," data from in-memory table"];
 	@[`.;tabname;0#];
@@ -114,34 +130,6 @@ savetables:{[dir;pt;forcesave;tabname]
 	if[gc;.gc.run[]];
 	]};
 	
-/- function to get additional partition(s) defined by parted attribute in sort.csv		
-getextrapartitiontype:{[tablename]
-	/- check that that each table is defined or the default attributes are defined in sort.csv
-	/- exits with error if a table cannot find parted attributes in tablename or default
-	/- only checks tables that have sort enabled
-	tabparts:$[count tabparts:distinct exec column from .sort.params where tabname=tablename,sort=1,att=`p;
-			[.lg.o[`getextraparttype;"parted attribute p found in sort.csv for ",(string tablename)," table"];
-			tabparts];
-			count defaultparts:distinct exec column from .sort.params where tabname=`default,sort=1,att=`p;
-			[.lg.o[`getextraparttype;"parted attribute p not found in sort.csv for ",(string tablename)," table, using default instead"];
-			defaultparts];
-			[.lg.e[`getextraparttype;"parted attribute p not found in sort.csv for ", (string tablename)," table and default not defined"]]
-		];
-	tabparts
-	};
-	
-/- function to check each partiton type specified in sort.csv is actually present in specified table
-checkpartitiontype:{[tablename;extrapartitiontype]
-	$[count colsnotintab:extrapartitiontype where not extrapartitiontype in cols get tablename;
-		.lg.e[`checkpart;"parted columns ",(", " sv string colsnotintab)," are defined in sort.csv but not present in ",(string tablename)," table"];
-		.lg.o[`checkpart;"all parted columns defined in sort.csv are present in ",(string tablename)," table"]];
-	};	
-	
-/- function to get list of distinct combiniations for partition directories
-/- functional select equivalent to: select distinct [ extrapartitiontype ] from [ tablenme ]
-getextrapartitions:{[tablename;extrapartitiontype] 
-	value each ?[tablename;();1b;extrapartitiontype!extrapartitiontype]
-	};	
 	
 /- function to upsert to specified directory
 upserttopartition:{[dir;tablename;tabdata;pt;expttype;expt]	    		
@@ -166,11 +154,11 @@ savetablesbypart:{[dir;pt;forcesave;tablename]
 	if[forcesave or maxrows[tablename] < arows: count value tablename;	
 		.lg.o[`rowcheck;"the ",(string tablename)," table consists of ", (string arows), " rows"];		
 		/- get additional partition(s) defined by parted attribute in sort.csv		
-		extrapartitiontype:getextrapartitiontype[tablename];		
+		extrapartitiontype:.merge.getextrapartitiontype[tablename];		
 		/- check each partition type actually is a column in the selected table
-		checkpartitiontype[tablename;extrapartitiontype];		
+		.merge.checkpartitiontype[tablename;extrapartitiontype];		
 		/- get list of distinct combiniations for partition directories
-		extrapartitions:getextrapartitions[tablename;extrapartitiontype];
+		extrapartitions:.merge.getextrapartitions[tablename;extrapartitiontype];
 		/- enumerate data to be upserted
 		enumdata:.Q.en[hdbdir;value tablename];
 		.lg.o[`save;"enumerated ",(string tablename)," table"];		
@@ -194,11 +182,14 @@ endofday:{[pt]
 	.lg.o[`eod;"end of day message received - ",spt:string pt];	
 	/- create a dictionary of tables and merge limits
 	mergelimits:(tablelist[],())!({[x] mergenumrows^mergemaxrows[x]}tablelist[]),();	
+  tablist:tablelist[]!{0#value x} each tablelist[];
 	/ - if save mode is enabled then flush all data to disk
 	if[saveenabled;
 		endofdaysave[savedir;pt];
 		/ - if sort mode enable call endofdaysort within the process,else inform the sort and reload process to do it
-		$[sortenabled;endofdaysort;informsortandreload] . (savedir;pt;tablelist[];writedownmode;mergelimits)];
+		$[sortenabled;endofdaysort;informsortandreload] . (savedir;pt;tablist;writedownmode;mergelimits)];
+	.lg.o[`eod;"deleting data from tabsizes"];
+	@[`.wdb;`tabsizes;0#];
 	.lg.o[`eod;"end of day is now complete"];
 	};
 	
@@ -245,7 +236,13 @@ endofdaysortdate:{[dir;pt;tablist]
 	/-sort permitted tables in database
 	/- sort the table and garbage collect (if enabled)
 	.lg.o[`sort;"starting to sort data"];
-	{[x] .sort.sorttab[x];if[gc;.gc.run[]]} each tablist,'.Q.par[dir;pt;] each tablist;
+	
+	$[(0 < count .z.pd[]) and ((system "s")<0);
+		[.lg.o[`sort;"sorting on slave sort", string .z.p];
+		{[x] .sort.sorttab[x];if[gc;.gc.run[]]} peach tablist,'.Q.par[dir;pt;] each tablist;
+		];
+		[.lg.o[`sort;"sorting on master sort"];
+		{[x] .sort.sorttab[x];if[gc;.gc.run[]]} each tablist,'.Q.par[dir;pt;] each tablist]];
 	.lg.o[`sort;"finished sorting data"];
 	/-move data into hdb
 	.lg.o[`mvtohdb;"Moving partition from the temp wdb ",(dw:.os.pth -1 _ string .Q.par[dir;pt;`])," directory to the hdb directory ",hw:.os.pth -1 _ string .Q.par[hdbdir;pt;`]];
@@ -257,37 +254,52 @@ endofdaysortdate:{[dir;pt;tablist]
 		];
 	};
 
-merge:{[dir;pt;tablename;mergelimits]    
-    /- get list of partition directories for specified table 
-    partdirs:` sv' tabledir,/:k:key tabledir:.Q.par[hsym dir;pt;tablename];
-    /- exit function if no subdirectories are found
-    if[0=count partdirs; :()];	
-    /- merge the data in chunks depending on max rows for table 	
-	/- destination for data to be userted to [backslashes corrected for windows]
-	dest:` sv .Q.par[hdbdir;pt;tablename],`;	
-    {[tablename;dest;mergemaxrows;curr;segment;islast]
-	.lg.o[`merge;"reading partition ", string segment];	
-	curr[0]:curr[0],select from get segment;
-	curr[1]:curr[1],segment;		
-	$[islast or mergemaxrows < count curr[0];
-	    [.lg.o[`merge;"upserting ",(string count curr[0])," rows to ",string dest];
-	    dest upsert curr[0];
-	    .lg.o[`merge;"removing segments", (", " sv string curr[1])];
-	    .os.deldir each string curr[1];
-	    (();())];
-	    curr]
-	}[tablename;dest;(mergelimits[tablename])]/[(();());partdirs; 1 _ ((count partdirs)#0b),1b];		
-	/- set the attributes
-	.lg.o[`merge;"setting attributes"];
-	@[dest;;`p#] each getextrapartitiontype[tablename];
-	.lg.o[`merge;"merge complete"];
-	/- run a garbage collection (if enabled)
-	if[gc;.gc.run[]];	
-	};	
+merge:{[dir;pt;tableinfo;mergelimits]    
+  /- get list of partition directories for specified table 
+  partdirs:` sv' tabledir,/:k:key tabledir:.Q.par[hsym dir;pt;tableinfo[0]];
+  /- exit function if no subdirectories are found
+
+  dest:` sv .Q.par[hdbdir;pt;tableinfo[0]],`;
+  .lg.o[`merge;"merging ",(string tableinfo[0])," to ",string dest];
+
+  $[0=count partdirs;
+    [
+      .lg.w[`merge;"no records found for ",(string tableinfo[0]),", merging empty table"];
+      dest set @[.Q.en[hdbdir;tableinfo[1]];.merge.getextrapartitiontype[tableinfo[0]];`p#];
+      //.lg.o[`merge;"setting attributes"];
+      //@[dest;;`p#] each .merge.getextrapartitiontype[tableinfo[0]];
+      //.lg.o[`merge;"merge complete"];
+    ];
+    [  
+      {[tablename;dest;mergemaxrows;curr;segment;islast]
+	      .lg.o[`merge;"reading partition ", string segment];	
+	      curr[0]:curr[0],select from get segment;
+	      curr[1]:curr[1],segment;		
+      	$[islast or mergemaxrows < count curr[0];
+	        [.lg.o[`merge;"upserting ",(string count curr[0])," rows to ",string dest];
+	        dest upsert curr[0];
+	        .lg.o[`merge;"removing segments", (", " sv string curr[1])];
+	        .os.deldir each string curr[1];
+	        (();())];
+	        curr]
+	    }[tableinfo[0];dest;(mergelimits[tableinfo[0]])]/[(();());partdirs; 1 _ ((count partdirs)#0b),1b];		
+	    /- set the attributes
+	    .lg.o[`merge;"setting attributes"];
+      @[dest;;`p#] each .merge.getextrapartitiontype[tableinfo[0]];
+	    .lg.o[`merge;"merge complete"];
+	    /- run a garbage collection (if enabled)
+	    if[gc;.gc.run[]];	
+    ]
+  ]
+ };	
 	
 endofdaymerge:{[dir;pt;tablist;mergelimits]		
 	/- merge data from partitons
-	merge[dir;pt;;mergelimits] each tablist;	
+	$[(0 < count .z.pd[]) and ((system "s")<0);
+		[.lg.o[`merge;"merging on slave"];
+		merge[dir;pt;;mergelimits] peach flip (key tablist;value tablist);];	
+		[.lg.o[`merge;"merging on master"];
+		merge[dir;pt;;mergelimits] each flip (key tablist;value tablist)]];
 	/- delete the empty date directory
 	.os.deldir .os.pth[string .Q.par[savedir;pt;`]];	
 	/-call the posteod function
@@ -301,7 +313,7 @@ endofdaymerge:{[dir;pt;tablist;mergelimits]
 endofdaysort:{[dir;pt;tablist;writedownmode;mergelimits]
 	$[writedownmode~`partbyattr;
 	endofdaymerge[dir;pt;tablist;mergelimits];
-	endofdaysortdate[dir;pt;tablist]
+	endofdaysortdate[dir;pt;key tablist]
 	];
 	};
 
@@ -339,7 +351,7 @@ informgateway:{[message]
 /- function to call that will cause sort & reload process to sort data and reload rdb and hdbs
 informsortandreload:{[dir;pt;tablist;writedownmode;mergelimits]
 	.lg.o[`informsortandreload;"attempting to contact sort process to initiate data sort"];
-	$[count sortprocs:.servers.getservers[`proctype;`sort;()!();1b;0b];
+	$[count sortprocs:.servers.getservers[`proctype;sorttypes;()!();1b;0b];
 		{.[{neg[y]@x;neg[y][]};(x;y);{.lg.e[`informsortandreload;"unable to run command on sort and reload process"];'x}]}[(`.wdb.endofdaysort;dir;pt;tablist;writedownmode;mergelimits);] each exec w from sortprocs;
 		[.lg.e[`informsortandreload;"can't connect to the sortandreload - no sortandreload process detected"];
 		 // try to run the sort locally
@@ -468,7 +480,7 @@ getsortparams:{[]
 .wdb.currentpartition:.wdb.getpartition[];
 
 /- make sure to request connections for all the correct types
-.servers.CONNECTIONS:(distinct .servers.CONNECTIONS,.wdb.hdbtypes,.wdb.rdbtypes,.wdb.gatewaytypes,.wdb.tickerplanttypes) except `
+.servers.CONNECTIONS:(distinct .servers.CONNECTIONS,.wdb.hdbtypes,.wdb.rdbtypes,.wdb.gatewaytypes,.wdb.tickerplanttypes,.wdb.sorttypes,.wdb.sortslavetypes) except `
 
 /- setting the upd and .u.end functions as the .wdb versions
 .u.end:{[pt] 

@@ -108,10 +108,31 @@ if[.z.o like "w*"; {if["\\" in v:getenv[x]; setenv[x;ssr[v;"\\";"/"]]]} each dis
 req:@[value;`req;`symbol$()]
 req:distinct `proctype`procname,req
 
+getconfig:{[path;level]
+        /-check if KDBAPPCONFIG exists
+        keyappconf:$[not ""~kac:getenv[`KDBAPPCONFIG];
+          key hsym appconf:`$kac,"/",path;
+          ()];
+
+        /-if level=2 then all files are returned regardless
+        if[level<2;
+          if[()~keyappconf;
+            appconf:()]];
+
+        /-get KDBCONFIG path
+        conf:`$(kc:getenv[`KDBCONFIG]),"/",path;
+
+        /-if level is non-zero return appconfig and config files
+        (),$[level;
+          appconf,conf;
+          first appconf,conf]}
+
+getconfigfile:getconfig[;0]
+
 version:"1.0"
 application:""
 getversion:{$[0 = count v:@[{first read0 x};hsym`$getenv[`KDBCONFIG],"/version.txt";version];version;v]}
-getapplication:{$[0 = count a:@[{read0 x};hsym`$getenv[`KDBCONFIG],"/application.txt";application];application;a]}
+getapplication:{$[0 = count a:@[{read0 x};hsym last getconfigfile"application.txt";application];application;a]}
 
 \d .lg
 
@@ -281,34 +302,33 @@ $[count[req] = count req inter key params;
 	.lg.o[`init;"ignoring partial subset of required process parameters found on the command line - reading from file"];
   ()];		 
 
-getconfig:{[path;level]
-        /-check if KDBAPPCONFIG exists
-        keyappconf:$[not ""~kac:getenv[`KDBAPPCONFIG];
-          key hsym appconf:`$kac,"/",path;
-          ()];
-
-        /-if level=2 then all files are returned regardless
-        if[level<2;
-          if[()~keyappconf;
-            appconf:()]];
-
-        /-get KDBCONFIG path
-        conf:`$(kc:getenv[`KDBCONFIG]),"/",path;
-
-        /-if level is non-zero return appconfig and config files
-        (),$[level;
-          appconf,conf;
-          first appconf,conf]}
-
-getconfigfile:getconfig[;0]
-
 // If any of the required parameters are null, try to read them from a file
 // The file can come from the command line, or from the environment path
 file:$[`procfile in key params; 
 	first `$params `procfile;
  	first getconfigfile["process.csv"]];
 
-readprocs:{[file]@[@/[;(`port;`host`proctype`procname);("I"$string value each .rmvr.removeenvvar each;"S"$.rmvr.removeenvvar each)]("****";enlist",")0:;file;{.lg.e[`procfile;"failed to read process file ",(string x)," : ",y]}[file]]}
+// read the process file and convert port field to integer list and all other fields
+// to symbol lists
+readprocs:{[file]
+	// Updates the process table to convert strings to integer and symbols
+	updateprocs:{
+		// Gets the value of the input expression and returns it as an integer
+		// list if the expression can be evaluated, else return null
+		errcheckport:{@[{"I"$string value x};x;0N]};
+		
+		// begin updating process file table
+		t:update port:errcheckport each .rmvr.removeenvvar each port from x;
+		t:update host:"S"$.rmvr.removeenvvar each host from t;
+		t:update procname:"S"$.rmvr.removeenvvar each procname from t;
+		t:update proctype:"S"$.rmvr.removeenvvar each proctype from t;
+		// return updated process file table
+		t
+		};
+	// error trap loading and processing of process file and returns finished table
+	@[updateprocs ("****";enlist",")0:;file;
+	{.lg.e[`procfile;"failed to read process file ",(string x)," : ",y]}[file]]
+	}
 
 // Read in the processfile
 // Pull out the applicable rows
@@ -396,22 +416,28 @@ if[not any `debug`noredirect in key params; rolllogauto[]];
 // this should then be enough to bootstrap
 loadf:{
 	.lg.o[`fileload;"loading ",x];
-	@[{system"l ",x; .lg.o[`fileload;"successfully loaded ",x]};x;{.lg.e[`fileload;"failed to load ",x," : ",y]}[x]]}
+	
+	$[`debug in key .proc.params; system"l ",x;@[system;"l ",x;{.lg.e[`fileload;"failed to load",x," : ",y]}[x]]];
+	.lg.o[`fileload;"successfully loaded ",x]}
 
 loaddir:{
 	.lg.o[`fileload;"loading q and k files from directory ",x];
 	// Check the directory exists
-	if[()~files:key hsym `$x; .lg.e[`fileload;"specified directory ",x," doesn't exist"]; :()];
+	$[()~files:key hsym `$x; .lg.o[`fileload;"specified directory ",x," doesn't exist"];
 	// Try to read in a load order file
-	$[`order.txt in files:key hsym `$x;
-		[.lg.o[`fileload;"found load order file order.txt"];
-		 order:(`$read0 `$x,"/order.txt") inter files;
-		 .lg.o[`fileload;"loading files in order "," " sv string order]];
-		order:`symbol$()];
-	files:files where any files like/: ("*.q";"*.k");
-	// rearrange the ordering
-	files:order,files except order;
-	loadf each (x,"/"),/:string files}
+		[
+        	$[`order.txt in files:key hsym `$x;
+                	[.lg.o[`fileload;"found load order file order.txt"];
+                 	order:(`$read0 `$x,"/order.txt") inter files;
+                 	.lg.o[`fileload;"loading files in order "," " sv string order]];
+                	order:`symbol$()];
+        	files:files where any files like/: ("*.q";"*.k");
+        	// rearrange the ordering
+        	files:order,files except order;
+        	loadf each (x,"/"),/:string files
+		]
+	];
+	}
 
 // load a config file
 loadconfig:{
@@ -445,9 +471,30 @@ overrideconfig:{[params]
 
 override:{overrideconfig[.proc.params]}
 
-reloadcommoncode:{loaddir getenv[`KDBCODE],"/common";}
-reloadprocesscode:{loaddir getenv[`KDBCODE],"/",string proctype;}
-reloadnamecode:{loaddir getenv[`KDBCODE],"/",string procname;}
+reloadcommoncode:{
+	loaddir getenv[`KDBCODE],"/common";
+	// Optionally load common code from seperate directory
+	$[""~getenv(`KDBAPPCODE);
+		.lg.o[`init;"Environment variable KDBAPPCODE not set, not loading app specific common code"];
+		loaddir getenv[`KDBAPPCODE],"/common"
+	];
+	}
+reloadprocesscode:{
+	loaddir getenv[`KDBCODE],"/",string proctype;
+	// Optionally load proctype code from seperate directory
+	$[""~getenv(`KDBAPPCODE);
+                .lg.o[`init;"Environment variable KDBAPPCODE not set, not loading app specific proctype code"];
+                loaddir getenv[`KDBAPPCODE],"/",string proctype
+        ];
+	}
+reloadnamecode:{
+	loaddir getenv[`KDBCODE],"/",string procname;
+	// Optionally load procname code from seperate directory
+	$[""~getenv(`KDBAPPCODE);
+                .lg.o[`init;"Environment variable KDBAPPCODE not set, not loading app specific procname code"];
+                loaddir getenv[`KDBAPPCODE],"/",string procname
+        ];
+	}
 
 \d . 
 // Load configuration

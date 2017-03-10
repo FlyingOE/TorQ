@@ -3,7 +3,7 @@
 // Process initialisation
 \d .proc
 loadcommoncode:1b		// whether to load the common code defined at ${KDBCODE}/common
-loadprocesscode:0b		// whether to load the process specific code defined at ${KDBCODE}/{process type} 
+loadprocesscode:0b		// whether to load the process specific code defined at ${KDBCODE}/{process type}
 loadnamecode:0b			// whether to load the name specific code defined at ${KDBCODE}/{name of process}
 loadhandlers:1b			// whether to load the message handler code defined at ${KDBCODE}/handlers
 logroll:1b			// whether to roll the std out/err logs on a daily basis
@@ -31,13 +31,17 @@ enabled:1b			// whether client tracking is enabled
 opencloseonly:0b	        // whether we only log opening and closing of connections
 INTRUSIVE:0b			// interrogate clients for more information upon connection.  Do not use if there are any non-kdb+ clients
 AUTOCLEAN:1b			// clean out old records when handling a close
-RETAIN:`long$0D02		// length of time to retain client information 
+RETAIN:`long$0D02		// length of time to retain client information
 MAXIDLE:`long$0D		// handles which haven't been used in this length of time will be closed. 0 means no clean up
 
 //subscription configuration
 \d .sub
 AUTORECONNECT:0b			// whether to reconnect to processes previously subscribed to
 checksubscriptionperiod:0D00:00:10	// how frequently to check subscriptions are still connected - 0D means don't check
+
+// Permissions configuration
+\d .pm
+enabled:0b
 
 // Access controls
 \d .access
@@ -55,26 +59,28 @@ enabled:1b											// whether server tracking is enabled
 CONNECTIONS:`rdb`hdb										// list of connections to make at start up
 DISCOVERYREGISTER:1b										// whether to register with the discovery service
 CONNECTIONSFROMDISCOVERY:1b									// whether to get connection details from the discovery service (as opposed to the static file).
-TRACKNONTORQPROCESS:1b          								// whether to track and register non torQ processes 
+TRACKNONTORQPROCESS:1b          								// whether to track and register non torQ processes
 NONTORQPROCESSFILE:hsym first .proc.getconfigfile["nontorqprocess.csv"]   				// non torQ processes file
 SUBSCRIBETODISCOVERY:1b										// whether to subscribe to the discovery service for new processes becoming available
 DISCOVERYRETRY:0D00:05										// how often to retry the connection to the discovery service.  If 0, no connection is made. This also dictates if the discovery service can connect it and cause it to re-register itself (val > 0)
 HOPENTIMEOUT:2000 										// new connection time out value in milliseconds
 RETRY:0D00:05											// period on which to retry dead connections.  If 0, no reconnection attempts
 RETAIN:`long$0D00:30 										// length of time to retain server records
-AUTOCLEAN:1b											// clean out old records when handling a close
+AUTOCLEAN:0b											// clean out old records when handling a close
 DEBUG:1b											// log messages when opening new connections
 LOADPASSWORD:1b											// load the external username:password from ${KDBCONFIG}/passwords
 STARTUP:0b    											// whether to automatically make connections on startup
 DISCOVERY:enlist`										// list of discovery services to connect to (if not using process.csv)
+SOCKETTYPE:enlist[`]!enlist `                                                                   // dict of proctype -> sockettype e.g. `hdb`rdb`tp!`tcps`tcp`unix
+PASSWORDS:enlist[`]!enlist `        // dict of host:port!user:pass
 
 // functions to ignore when called async - bypass all permission checking and logging
 \d .zpsignore
-enabled:1b					// whether its enabled 
+enabled:1b					// whether its enabled
 ignorelist:(`upd;"upd";`.u.upd;".u.upd")	// list of functions to ignore
 
 // timer functions
-\d .timer 
+\d .timer
 enabled:1b			// whether the timer is enabled
 debug:0b                    	// print when the timer runs any function
 logcall:1b                  	// log each timer call by passing it through the 0 handle
@@ -107,8 +113,40 @@ img:`$getenv[`KDBHTML],"/img/AquaQ-TorQ-symbol-small.png"	// default image for b
 // heartbeating
 \d .hb
 enabled:1b			// whether the heartbeating is enabled
+subenabled:0b                   // whether subscriptions to other hearbeats are made
+CONNECTIONS:`ALL                // processes that heartbeat subscriptions are recieved from (as a subset of .servers.CONNECTIONS)
 debug:1b			// whether to print debug information
 publishinterval:0D00:00:30	// how often heartbeats are published
 checkinterval:0D00:00:10	// how often heartbeats are checked
 warningtolerance:2f		// a process will move to warning state when it hasn't heartbeated in warningtolerance*checkinterval
 errortolerance:3f		// and to an error state when it hasn't heartbeated in errortolerance*checkinterval
+
+\d .ldap
+
+enabled:0b                                  // whether ldap authentication is enabled
+debug:0i					                // debug level for ldap library: 0i = none, 1i=normal, 2i=verbose
+server:"localhost";                         // name of ldap server
+port:0i;                                    // port for ldap server
+version:3;                                  // ldap version number
+blocktime:0D00:30:00;                       // time before blocked user can attempt authentication
+checklimit:3;                               // number of attempts before user is temporarily blocked
+checktime:0D00:05;                          // period for user to reauthenticate without rechecking LDAP server
+buildDNsuf:"";                              // suffix used for building bind DN
+buildDN:{"uid=",string[x],",",buildDNsuf};  // function to build bind DN
+
+// broadcast publishing
+\d .u
+broadcast:1b;                   // broadcast publishing is on by default. Availble in kdb version 3.4 or later.
+
+// timezone
+\d .eodtime
+rolltimeoffset:0D00:00:00.000000000;	// offset from default midnight roll
+datatimezone:`$"GMT";			// timezone for TP to timestamp data in
+rolltimezone:`$"GMT";			// timezone to perform rollover in
+
+//Subscriber cut-off
+\d .subcut
+enabled:0b;			//flag for enabling subscriber cutoff. true means slow subscribers will be cut off. Default is 0b 
+maxsize:100000000;		//a global value for the max byte size of a subscriber. Default is 100000000
+breachlimit:3;			//the number of times a handle can exceed the size limit check in a row before it is closed. Default is 3
+checkfreq:0D00:01;		//the frequency for running the queue size check on subscribers. Default is 0D00:01
