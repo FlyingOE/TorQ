@@ -1,4 +1,4 @@
-site_name: TorQ
+site_name: TorQ & Finance Starter Pack
 site_favicon: graphics/favicon.ico
 pages:
     - Home: index.md
@@ -10,11 +10,16 @@ pages:
     - Processes: Processes.md 
     - Visualisation: visualisation.md
     - TorQ Blog Posts: blog.md
+    - *Finance Starter Pack* Architecture: architecture.md
+    - *Finance Starter Pack* Have a Play: play.md
 copyright: 'Copyright &copy 2016 AquaQ Analytics Limited.  Kx &reg and kdb+ are registered trademarks of Kx Systems Inc.'
 
 theme: 'material'
 repo_name: 'GitHub'
 repo_url: 'https://github.com/AquaQAnalytics/TorQ'
+repo_url: 'https://github.com/AquaQAnalytics/TorQ-Finance-Starter-Pack'
+repo_url: 'https://github.com/FlyingOE/TorQ'
+repo_url: 'https://github.com/FlyingOE/TorQ-Finance-Starter-Pack'
 extra:
    logo: 'graphics/TorQ-logo.png' 
    palette:
