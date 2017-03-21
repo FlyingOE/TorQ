@@ -51,8 +51,8 @@ opencon:{
 	if[DEBUG;.lg.o[`conn;"attempting to open handle to ",string x]];
 
 	// If the supplied connection string has 2 or more colons append on user:pass from passwords dictionary
-        // else return connection string passed in
-        connection:hsym $[2 >= sum ":"=string x; `$(string x),":",string USERPASS^PASSWORDS[x];x];
+	// else return connection string passed in
+	connection:hsym $[2 >= sum ":"=string x; `$(string x),":",string USERPASS^PASSWORDS[x];x];
 
 	h:@[{(hopen x;"")};(connection;.servers.HOPENTIMEOUT);{(0Ni;x)}];
 
@@ -117,7 +117,7 @@ types:{asc distinct exec proctypes from`.servers.SERVERS where .dotz.liveh w}
 unregistered:{except[key .z.W;exec w from`.servers.SERVERS]}
 
 cleanup:{if[count w0:exec w from`.servers.SERVERS where not .dotz.livehn w;
-        update endp:.proc.cp[],lastp:.proc.cp[],w:0Ni from`.servers.SERVERS where w in w0];
+    update endp:.proc.cp[],lastp:.proc.cp[],w:0Ni from`.servers.SERVERS where w in w0];
     if[AUTOCLEAN;delete from`.servers.SERVERS where not .dotz.liveh w,(.proc.cp[]^endp)<.proc.cp[]-.servers.RETAIN];}
 
 / add a new server for current session
@@ -312,9 +312,9 @@ startup:{
 
 	// If DISCOVERY servers have been explicity defined
 	if[count .servers.DISCOVERY;
-                if[not null first .servers.DISCOVERY;
-                        if[count select from procs where hpup in .servers.DISCOVERY; .lg.e[`startup; "host:port in .servers.DISCOVERY list is already present in data read from ",string .proc.file]];
-                        procs,:([]host:`;port:0Ni;proctype:`discovery;procname:`;hpup:.servers.DISCOVERY)]];
+		if[not null first .servers.DISCOVERY;
+			if[count select from procs where hpup in .servers.DISCOVERY; .lg.e[`startup; "host:port in .servers.DISCOVERY list is already present in data read from ",string .proc.file]];
+				procs,:([]host:`;port:0Ni;proctype:`discovery;procname:`;hpup:.servers.DISCOVERY)]];
 	// Remove any processes that have an active connection
 	connectedprocs: select procname, proctype, hpup from SERVERS;
 	procs: delete from procs where ([] procname; proctype; hpup) in connectedprocs;
