@@ -620,6 +620,55 @@ pubsub.q (make sure u.\[k|q\] is listed before pubsub.q in order.txt)
 then publish and subscribe will be implemented. You can also build out
 this file to add your own publish and subscribe routines as required.
 
+<a name="kafka"></a>
+
+kafka.q
+-------
+
+kafka.q provides q language bindings for Apache Kafka, a 'distributed streaming
+platform', a real time messaging system with persistent storage in message logs.
+
+The core functionality of Kafka – pub/sub messaging with persisted logs, will be
+familiar to most readers as the functionality offered by the kdb+ tick
+tickerplant. The tickerplant log allows the real time database and other
+consumers to replay a day’s events to recover state. An application architecture
+built around Kafka could dispense with a tickerplant component, and have RDBs
+and other real time clients query Kafka on startup for offsets, and play back
+the data they need. While not suitable for very low latency access to streaming
+data, it would carry some advantages for very high throughput applications,
+particularly those in the cloud:
+
+* Kafka’s distributed nature should allow it to scale more transparently than
+splitting tickerplants by instrument universe or message type
+* Replaying from offsets is the same interface as live pub/sub and doesn’t require
+filesystem access to the tickerplant log, so RDB’s and other consumer could be
+on a different server
+
+By default, the Kafka bindings will be loaded into all TorQ processes running on
+l64 systems (the only platform currently supported). An example of usage is
+shown here (this assumes a local running instance of kafka - instructions for
+this are available on the [kafkaq](https://github.com/AquaQAnalytics/kafkaq) github 
+repo):
+
+```
+q).kafka.initconsumer[`localhost:9092;()]
+q).kafka.initproducer[`localhost:9092;()]
+q)kupd / print default definition for incoming data - ignore key, print message
+as ascii
+{[k;x] -1 `char$x;}
+q).kafka.subscribe[`test;0] / subscribe to topic test, partition 0
+q)pub:{.kafka.publish[`test;0;`;`byte$x]} / define pub to publish text input to topic
+test on partition 0 with no key defined
+q)pub"hello world"
+q)hello world
+
+```
+
+Limitations of the current implementation:
+
+* Only l64 supported
+* Single consumer thread subscribed to one topic at a time
+
 <a name="tp"></a>
 
 tplogutils.q
@@ -839,6 +888,140 @@ number of times they have exceeded the size limit in a row.
 To enable this functionality the .subcut.enabled flag must be set to true and 
 the timer.q script must be loaded on the desired processes. By default the chained 
 tickerplant is the only processes with the functionality enabled. 
+
+datareplay.q
+------------
+
+The datareplay utility provides functionality for generating tickerplant function calls from historcial
+data which can be executed by subscriber functions. This can be used to test a known data-set against a 
+subscriber for testing or debugging purposes.
+
+It can load this data from the current TorQ session, or from a remote hdb if given its connection handle.
+
+It can also chunk the data by time increments (as if the tickerplant was in batch mode), and can also generate
+calls to a custom timer function for the same time increments (defaults to .z.ts).
+
+The functions provided by this utility are made available in the .datareplay namespace.
+
+The utility is mainly used via the tabesToDataStreamFunction, which accepts a dictionary parameter with the following
+fields:
+
+| Key     | Example Value           | Description                            | Required | Default  |
+|:-------:|:-----------------------:|:--------------------------------------:|:--------:|:--------:|
+|tabs     | `` `trade`quote or `trade ``  | List of tables to include              | Yes      | N/A      |
+|sts      | 2014.04.04D07:00:00.000 | Start timestamp for data               | Yes      | N/A      |
+|ets      | 2014.04.04D16:30:00.000 | End of timestamp for data              | Yes      | N/A      |
+|syms     | `` `AAPL`IBM ``               | List of symbols to include             | No       | All syms |
+|where    | `` ,(=;`src;,`L) ``           | Custom where clause in functional form | No       | none     |
+|timer    | 1b                      | Generate timer function flag           | No       | 0b       |
+|h        | 5i                      | Handle to hdb process                  | No       | 0i (self)|
+|interval | 0D00:00:01.00           | Time interval used to chunk data, bucketed by timestamp if no time interval set       | No       | None     |
+|tc       | `` `data_time ``              | Name of time column to cut on          | No       | `` `time ``    |
+|timerfunc| .z.ts                   | Timer function to use if `timer parameter is set | No | .z.ts | 
+
+When the timer flag is set, the utility will interleave timer function calls in the message column at intervals based on the interval parameter, or every 10 seconds if interval is not set. This is useful if testing requires a call to a function at a set time, to generate a VWAP every 10 minutes for example. The function the timer messages call is based on the timerfunc parameter, or .z.ts if this parameter is not set.
+
+If the interval is set the messages will be aggregated into chunks based on the interval value, if no interval is specified, the data will be bucketed by timestamp (one message chunk per distinct timestamp per table).
+
+If no connection handle is specified (h parameter), the utility will retrieve the data from the process the utility is running on, using handle 0.
+
+The where parameter allows for the use of a custom where clause when extracting data, which can be useful when the dataset is large and only certain data is required, for example if only data where `` src=`L `` is required. The where clause(s) are required to be in functional form, for example `` enlist (=;`src;,`L) `` or `` ((=;`src;enlist `L);(>;`size;100)) `` (note, that if only one custom where clause is included it is required to be enlisted).
+
+It is possible to get the functional form of a where clause by running parse on a mock select string like below:
+
+    q)parse "select from t where src=`L,size>100"
+    ?
+    `t
+    ,((=;`src;,`L);(>;`size;100))
+    0b
+    ()
+    
+The where clause is then the 3rd item returned in the parse tree.
+
+
+## Examples:
+
+Extract all data between sts and ets from the trades table in the current process.
+
+    q)input
+    tabs| `trades
+    sts | 2014.04.21D07:00:00.000000000
+    ets | 2014.05.02D17:00:00.000000000
+    q).datareplay.tablesToDataStream input
+    time                          msg                                            ..
+    -----------------------------------------------------------------------------..
+    2014.04.21D08:00:23.478000000 `upd `trades `sym`time`src`price`size!(`YHOO;20..
+    2014.04.21D08:00:49.511000000 `upd `trades `sym`time`src`price`size!(`YHOO;20..
+    2014.04.21D08:01:45.623000000 `upd `trades `sym`time`src`price`size!(`YHOO;20..
+    2014.04.21D08:02:41.346000000 `upd `trades `sym`time`src`price`size!(`YHOO;20..
+    ..
+    q)first .datareplay.tablesToDataStream input
+    time| 2014.04.21D08:00:23.478000000
+    msg | (`upd;`trades;`sym`time`src`price`size!(`YHOO;2014.04.21D08:00:23.47800..
+
+Extract all data between sts and ets from the trades table from a remote hdb handle=3i.
+
+    q)input
+    tabs| `trades
+    sts | 2014.04.21D07:00:00.000000000
+    ets | 2014.05.02D17:00:00.000000000
+    h   | 3i
+    q).datareplay.tablesToDataStream input
+    time                          msg                                            ..
+    -----------------------------------------------------------------------------..
+    2014.04.21D08:00:07.769000000 `upd `trades `sym`time`src`price`size!(`IBM;201..
+    2014.04.21D08:00:13.250000000 `upd `trades `sym`time`src`price`size!(`NOK;201..
+    2014.04.21D08:00:19.070000000 `upd `trades `sym`time`src`price`size!(`MSFT;20..
+    2014.04.21D08:00:23.678000000 `upd `trades `sym`time`src`price`size!(`YHOO;20..
+    ..
+    q)first .datareplay.tablesToDataStream input
+    time| 2014.04.21D08:00:07.769000000
+    msg | (`upd;`trades;`sym`time`src`price`size!(`IBM;2014.04.21D08:00:07.769000..
+
+
+Same as above but including quote table and with interval of 10 minutes:
+
+
+    q)input
+    tabs    | `quotes`trades
+    sts     | 2014.04.21D07:00:00.000000000
+    ets     | 2014.05.02D17:00:00.000000000
+    h       | 3i
+    interval| 0D00:10:00.000000000
+    q).datareplay.tablesToDataStream input
+    time                          msg                                            ..
+    -----------------------------------------------------------------------------..
+    2014.04.21D08:09:47.600000000 `upd `trades +`sym`time`src`price`size!(`YHOO`A..
+    2014.04.21D08:09:55.210000000 `upd `quotes +`sym`time`src`bid`ask`bsize`asize..
+    2014.04.21D08:19:39.467000000 `upd `trades +`sym`time`src`price`size!(`CSCO`N..
+    2014.04.21D08:19:49.068000000 `upd `quotes +`sym`time`src`bid`ask`bsize`asize..
+    ..
+    q)first .datareplay.tablesToDataStream input
+    time| 2014.04.21D08:09:47.600000000
+    msg | (`upd;`trades;+`sym`time`src`price`size!(`YHOO`AAPL`MSFT`NOK`DELL`YHOO`..
+    
+    
+All messages from trades where `` src=`L `` bucketed in 10 minute intervals interleaved with calls to the function `` `vwap ``.
+
+    q)input
+    tabs     | `trades
+    h        | 3i
+    sts      | 2014.04.21D08:00:00.000000000
+    ets      | 2014.05.02D17:00:00.000000000
+    where    | ,(=;`src;,`L)
+    timer    | 1b
+    timerfunc| `vwap
+    interval | 0D00:10:00.000000000
+    q).datareplay.tablesToDataStream input
+    time                          msg                                            ..
+    -----------------------------------------------------------------------------..
+    2014.04.21D08:00:00.000000000 (`vwap;2014.04.21D08:00:00.000000000)          ..
+    2014.04.21D08:09:46.258000000 (`upd;`trades;+`sym`time`src`price`size!(`AAPL`..
+    2014.04.21D08:10:00.000000000 (`vwap;2014.04.21D08:10:00.000000000)          ..
+    2014.04.21D08:18:17.188000000 (`upd;`trades;+`sym`time`src`price`size!(`AAPL`..
+    ..
+
+
 
 Modified u.q
 ------------
