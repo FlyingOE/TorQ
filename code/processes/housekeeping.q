@@ -43,10 +43,10 @@ if[`hkusage in key .proc.params; -1 .hk.extrausage; exit 0]
 csvloader:{[CSV]
 //-rethrows error if file doesn't exist, checks to see if correct columns exist in file
 	housekeepingcsv::@[{.lg.o[`housekeeping;"Opening ",x];("S***IB"; enlist ",") 0:"S"$x};CSV;{.lg.e[`housekeeping;"failed to open ",x," : ", y];'y}[CSV]];
-	housekeepingcsv::(`agemin^cols[housekeepingcsv]) xcol housekeepingcsv;
+	housekeepingcsv::@[c;where (c:cols housekeepingcsv) in ``x;:;`agemin] xcol housekeepingcsv;
 	check:(all `function`path`match`exclude`age`agemin in (cols housekeepingcsv));
 	//-if check shows incorrect columns, report error
-	$[check~0b; [{.lg.e[`housekeeping;"The file ",x," has incorrect layout"];'housekeepingcsv[`function`path`match`exclude`age`agemin]}[CSV]];
+	$[check~0b; [{.lg.e[`housekeeping;"The file ",x," has incorrect layout"];'`$"incorrect housekeeping csv layout"}[CSV]];
 		//-if correctly columned csv has nulls, report error and skip lines 
 		[if[(any nullcheck:any null (housekeepingcsv.function;housekeepingcsv.age))>0; .lg.o[`housekeeping;"Null values found in file, skipping line(s)  ", ("," sv (string where nullcheck))]];
 		housekeepingcsv2:(housekeepingcsv[where not nullcheck]);
@@ -58,8 +58,18 @@ wrapper:{[DICT]
 	$[not DICT[`function] in key `.;.lg.e[`housekeeping;"Could not find function: ",string DICT[`function]];
 	(value DICT[`function]) each (find[.rmvr.removeenvvar [DICT[`path]];DICT[`match];DICT[`age];DICT[`agemin]] except find[.rmvr.removeenvvar [DICT[`path]];DICT[`exclude];DICT[`age];DICT[`agemin]])]}
 
-//FUNCTIONS FOR LINUX
 
+
+//compress by calling .cmp.compress function defined using -19!
+kdbzip:{[FILE]   
+	 @[{.lg.o[`housekeeping;"compressing ",x]; .cmp.compress[filehandles;2;17;4;hcount filehandles:hsym `$x]};
+	     FILE; 
+	 {.lg.e[`housekeeping;"Failed to compress ",x," : ", y]}[FILE]] 
+	  }
+
+
+
+//FUNCTIONS FOR LINUX
 \d .unix
 
 //-locates files with path, matching string and age

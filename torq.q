@@ -6,6 +6,10 @@ loaded:1b
 // Initialised flag - used to check if the process is still initialisation
 initialised:0b
 
+// function to add functions to initialisation list
+initlist:()
+addinitlist:{[x].proc.initlist,:enlist x};
+  
 generalusage:@[value;`generalusage;"General:
  This script should form the basis of a production kdb+ environment. 
  It can be sourced from other files if required, or used as a launch script before loading other files/directories 
@@ -108,6 +112,37 @@ if[.z.o like "w*"; {if["\\" in v:getenv[x]; setenv[x;ssr[v;"\\";"/"]]]} each dis
 req:@[value;`req;`symbol$()]
 req:distinct `proctype`procname,req
 
+// Dependency Checks
+// config.csv to contain app,version,dependency
+// dependency formatted "app version" delimited by ;
+/- Check each dependency against version number
+checkvers:{[i;j;d;t]
+    {[i;j;d;t;x]$[("I"$i[x])<"I"$j[x];x:6;("I"$i[x])>"I"$j[x];[.lg.e[`config;(raze/) string t[`app]," ",string t[`version]," requires ",string d," ",sv[".";i],". Current Version is ",string d," ",sv[".";j]];x:6];x+:1]}[i;j;d;t;]/[{x<5};0];}
+
+runchk:{[dict;t;x]
+      /- i=dependency. j=version
+      j:vs[".";]'[string dict[d:`$first " " vs x]];
+      i:"." vs last " " vs x;
+      /- check app for current dependency exists
+      if[not d in key dict;[.lg.e[`config;(raze/) string t[`app]," ", string t[`version] ," requires ",string d," ",sv[".";i],". Current version not supplied"]]];
+      checkvers[i;;d;t]'[j]};
+
+checkdependency:{[path]
+      /- check config files are supplied
+      if[2<=count path;
+        /- check TorQ config file is supplied
+        if[()~key hsym last path;[.lg.e[`config;"TorQ config file not supplied ",string last path]]];
+        /-load config csv files
+        a,:raze {("SSS";enlist ",") 0: hsym[x]} each path;
+        /- check for kdb verion
+        if[not `kdb in a[`app];a,:(`kdb;`$(string .z.K),".",string .z.k;`)];
+        /- get current app versions
+        dict:exec version by app from a;
+        /- update table to contain string dependencies
+        t:update vs[";";]each string dependency from (select from a where dependency<>`);
+        /-check each dependency within t
+        {[t;dict] runchk[dict;t;]'[t[`dependency]]}[;dict]'[t]]}
+
 getconfig:{[path;level]
         /-check if KDBAPPCONFIG exists
         keyappconf:$[not ""~kac:getenv[`KDBAPPCONFIG];
@@ -131,7 +166,7 @@ getconfigfile:getconfig[;0]
 
 version:"1.0"
 application:""
-getversion:{$[0 = count v:@[{first read0 x};hsym`$getenv[`KDBCONFIG],"/version.txt";version];version;v]}
+getversion:{$[0 = count v:@[{raze string exec version from (("SS ";enlist ",")0: x) where app=`TorQ};hsym`$getenv[`KDBCONFIG],"/dependency.csv";version];version;v]}
 getapplication:{$[0 = count a:@[{read0 x};hsym last getconfigfile"application.txt";application];application;a]}
 
 \d .lg
@@ -159,7 +194,7 @@ pubmap:@[value;`pubmap;`ERROR`ERR`INF`WARN!1 1 0 1]
 
 // Log a message
 l:{[loglevel;proctype;proc;id;message;dict]
-	$[0 < redir:0^outmap[loglevel];
+	$[0 < redir:`int$(0w 1 `onelog in key .proc.params)&0^outmap[loglevel];
 		neg[redir] .lg.format[loglevel;proctype;proc;id;message];
 		ext[loglevel;proctype;proc;id;message;dict]];
         publish[loglevel;proctype;proc;id;message];	
@@ -234,6 +269,7 @@ exitifnull:{[variable]
 		.lg.e[`init;"Variable ",(string variable)," is null but must be set"];
 		usage[]]}
 
+
 // Function for replacing environment variables with the associated full path
 
 \d .rmvr
@@ -273,7 +309,7 @@ initialised:0b
 stop:`stop in key params
 .lg.o[`init;"stop mode (initialisation errors cause the process loading to stop) is set to ",string stop]
 
-if[trap and stop; .log.o[`init;"trap mode and stop mode are both set to true.  Stop mode will take precedence"]];
+if[trap and stop; .lg.o[`init;"trap mode and stop mode are both set to true.  Stop mode will take precedence"]];
 
 // Set up the environment if not set
 settorqenv'[`KDBCODE`KDBCONFIG`KDBLOG`KDBLIB`KDBHTML;("code";"config";"logs";"lib";"html")];
@@ -301,6 +337,8 @@ $[count[req] = count req inter key params;
   0<count req inter key params;
 	.lg.o[`init;"ignoring partial subset of required process parameters found on the command line - reading from file"];
   ()];		 
+
+checkdependency[getconfig["dependency.csv";1]]
 
 // If any of the required parameters are null, try to read them from a file
 // The file can come from the command line, or from the environment path
@@ -554,10 +592,25 @@ if[@[value;`.ps.loaded;0b]; .ps.initialise[]]
 // initialise connections
 if[@[value;`.servers.STARTUP;0b]; .servers.startup[]]
 
+// function to execute functions in .proc.initlist
+.proc.init:{
+	$[count .proc.initlist;
+		[{[a].lg.o[`init;"attemping to run initialisation: ",-3!a];
+		@[value;a;
+		{[x;a].lg.e[`init;x," error - failed to run initialisation: ",-3!a]}[;a]]}
+		each .proc.initlist;.proc.initlist:()];
+		.lg.o[`init;"no initialisation functions found"]];
+ }
+
+if[count .proc.initlist;.proc.init[]]
+
 .lg.banner[]
 
 // set the initialised flag
 .proc.initialised:1b
+
+// set start time of the process
+.proc.starttimeUTC:.z.p
 
 if[`test in key .proc.params;
         $[0<count[getenv[`KDBTESTS]];

@@ -82,7 +82,7 @@ The available command line parameters are:
   |-nopi                     |Reset the definition of .z.pi to the initial value (useful for debugging)|
   |-debug                    |Equivalent to \[-nopi -noredirect\]|
   |-usage                    |Print usage info and exit|
-
+  |-onelog                   |Writes all messages to stdout log file, note non-trapped errors will still be written to stderr log file|
   
 
 In addition any process variable in a namespace (.\*.\*) can be
@@ -92,6 +92,17 @@ configuration or wrapper). Variable names should be supplied with full
 qualification e.g. -.servers.HOPENTIMEOUT 5000.
 
 <a name="env"></a>
+
+Using torq.sh
+---------------------
+
+torq.sh is a script that runs processes in torq with added functionality,
+one key enhancement is all the process configuration is now in one place.
+The default process file is located in $KDBCONFIG/process.csv. This 
+script is only available on Linux. It requires environment variables to 
+be set, similar to torq.q. A usage statement for the script can be seen 
+by running the following in a unix environment: `./torq.sh`.
+
 
 Environment Variables 
 ---------------------
@@ -160,10 +171,10 @@ hostname entry.
 The process file has format as below.
 
     aquaq$ cat config/process.csv 
-    host,port,proctype,procname
-    aquaq,9997,rdb,rdb_europe_1
-    aquaq,9998,hdb,hdb_europe_1
-    aquaq,9999,hdb,hdb_europa_2
+    host,port,proctype,procname,U,localtime,g,T,w,load,startwithall,extras,qcmd
+    aquaq,9997,rdb,rdb_europe_1,appconfig/passwords/accesslist.txt,1,1,3,,${KDBCODE}/processes/rdb.q,1,,q
+    aquaq,9998,hdb,hdb_europe_1,appconfig/passwords/accesslist.txt,1,1,60,4000,${KDBHDB},1,,q
+    aquaq,9999,hdb,hdb_europe_2,appconfig/passwords/accesslist.txt,1,1,60,4000,${KDBHDB},1,,q
 
 The process will read the file and try to identify itself based on the
 host and port it is started on. The host can either be the value
@@ -172,6 +183,83 @@ not automatically identify itself it will exit, unless proctype and
 procname were both passed in as command line parameters. If both of
 these parameters are passed in then default configuration settings will
 be used.
+
+The parameters following procname set the following:
+
+  |Parameter                        |  Description|
+  |---------------------------------| ----------------------------|
+  |U                                |  Authentication requiring a usr:pwd file|
+  |localtime                        |  Sets process running in local time rather than GMT|
+  |g                                |  Garbage collection immediate (1) or deferred (0)|
+  |T                                |  Timeout in seconds for client queries, 0 for no timeout|
+  |w                                |  Workspace MB limit|
+  |load                             |  Files or database directory to load|
+  |startwithall                     |  Determine if process is started when all is specified| 
+  |extras                           |  Specify any additional parameters|
+  |qcmd                             |  Allows different versions of q to be used or different command line options - rlwap, numactl|
+
+Where U/g/T/w are standard q command line arguments and localtime and 
+load are TorQ command line parameters. 
+
+Running processes using torq.sh
+-------
+
+torq.sh is able to start or stop processes seperately, in a batch or 
+all at once. Before a process is started/stopped the script will 
+check that the process is not already running before attempting to 
+start/stop a process, a time of when this is executed is printed to screen.
+```
+$ ./torq.sh start rdb1 hdb1 tickerplant1
+    15:42:00 | Starting rdb1...
+    15:42:00 | hdb1 already running
+    15:42:00 | Starting tickerplant1...
+            
+$ ./torq.sh stop all
+    15:46:19 | Shutting down hdb1...
+    15:46:19 | Shutting down hdb2...
+```
+A status summary table of all the processes can be printed to screen, 
+the summary provides information on the time the process was checked, 
+process name, status and the port number and PID of that process.
+```
+$ ./torq.sh summary
+    TIME     | PROCESS        | STATUS | PORT   | PID
+    11:33:59 | discovery1     | up     | 41001  | 14426
+    11:33:59 | tickerplant1   | down   |
+```
+It is possible to view the underlying start code for all processes. 
+This is useful if another available command line parameter was required 
+for start up. 
+```
+$ ./torq.sh start discovery1 -print
+    Start line for discovery1:
+    nohup q deploy/torq.q -procname discovery1 -stackid 41000 -proctype discovery -U appconfig/passwords/accesslist.txt -localtime 1 -g 0 -load deploy/code/processes/discovery.q -procfile deploy/appconfig/process.csv </dev/null > deploy/logs/torqdiscovery1.txt 2>&1 &
+```
+The debug command line parameter can be appended to the start line 
+straight from torq.sh to start a process in debug mode. Note it is only 
+possible to start one process at a time in debug mode.
+```
+$ ./torq.sh tickerplant1 -debug
+```
+If a process name not present in the process.csv is used, the input 
+process name will return as an invalid input. To see a list of all the 
+processes in the process.csv see below.
+```
+$ ./torq.sh procs
+```
+A different process file can be used with this script from the command 
+line. The argument following the csv flag needs to be a full path to 
+the process.csv.
+```
+$ ./torq.sh start all -csv ${KDBAPPCONFIG}/process.csv
+```
+To add/override the default values in the g, T, w, or extras column the 
+extras flag can be used in this script. 
+```
+$ ./torq.sh start rdb1 -extras -T 60 -w 4000
+$ ./torq.sh start sort1 -extras -s -3
+```
+
 
 <a name="logging"></a>
 
@@ -194,6 +282,19 @@ directory. The log files created are:
 The date suffix can be overridden by modifying the .proc.logtimestamp
 function and sourcing torq.q from another script. This could, for
 example, change the suffixing to a full timestamp.
+
+In the case where -onelog is flagged TorQ will attempt to redirect
+all output to the out log file, unfortunately this is not perfect.
+
+TorQ uses \1 and \2 to redirect stderr and stdout, onelog only
+overrides handled errors to the \1 redirect. This is because
+there are issuses with redirecting both to the same file, (the ordering
+of messages will be incorrect) the issue is with KDB+ rather than
+with TorQ.
+
+Because of this errors that are raised by KDB+ and unhandled are still
+directed to the err log file because \1 and \2 cannot be redirected to
+the same file.
 
 <a name="config"></a>
 
@@ -243,6 +344,27 @@ of the default configuration variables from the default configuration
 directory.
 
 All configuration is loaded before code.
+
+### Application Dependency
+
+TorQ will automatically check application version and dependency
+information. TorQ will check the $KDBAPPCONFIG directory for a dependency.csv
+file. This file should contain information in the format:
+
+|app  |version |dependency           |
+|-----|--------|---------------------|
+|app0 |1.0.0   |app1 1.1.1;app2 2.1.0|
+
+TorQ will also search the $KDBCONFIG directory for the TorQ dependency.csv file.
+If any of the dependency versions exceed application versions, TorQ will exit
+and log the error. 
+
+If no dependency files are supplied, TorQ will run as normal. However, if only an 
+application dependency file is supplied, TorQ will exit and log the error.
+
+Each version number can be up to 5 digits in length, separated by '.' and 
+the current kdb+ version will be automatically added with the format
+major.minor.yyyy.mm.dd
 
 <a name="code"></a>
 
